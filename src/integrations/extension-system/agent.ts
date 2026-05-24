@@ -3,18 +3,17 @@
 /**
  * PI Extension System - Automatic background context management
  * 
- * Install once, runs automatically in background:
- * - File watcher (auto-sync on changes)
- * - Git hooks (auto-update on commits)
- * - Context API (for AI agents)
- * - Status bar updates
+ * Supports multiple projects in parallel:
+ * - Each project uses a unique port (auto-assigned based on path hash or manual)
+ * - PID files are project-specific (in .pi/ directory)
+ * - HTTP API bound to localhost with project-specific port
  * 
- * Usage: pi agent start
+ * Usage: pi agent start [--port 4733]
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync, spawn, ChildProcess } from 'child_process';
+import { execSync } from 'child_process';
 import * as http from 'http';
 import { fileURLToPath } from 'url';
 
@@ -22,7 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PI_DIR = '.pi';
-const PORT = 4732;
+const DEFAULT_PORT = 4732;
 const DEBOUNCE_MS = 2000;
 
 // Colors for output
@@ -48,6 +47,7 @@ interface ExtensionConfig {
   gitHooks: boolean;
   httpApi: boolean;
   statusBar: boolean;
+  port: number;
 }
 
 const defaultConfig: ExtensionConfig = {
@@ -56,14 +56,41 @@ const defaultConfig: ExtensionConfig = {
   gitHooks: true,
   httpApi: true,
   statusBar: true,
+  port: DEFAULT_PORT,
 };
+
+/**
+ * Generate a unique port based on project path
+ */
+function generatePort(projectRoot: string, preferredPort?: number): number {
+  if (preferredPort) return preferredPort;
+  
+  // Hash the project path to get a consistent port in range 4732-4932
+  let hash = 0;
+  for (let i = 0; i < projectRoot.length; i++) {
+    const char = projectRoot.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  
+  // Map hash to port range 4732-4932 (200 possible ports)
+  return 4732 + Math.abs(hash % 200);
+}
+
+/**
+ * Get project identifier (for display/logs)
+ */
+function getProjectId(projectRoot: string): string {
+  const name = path.basename(projectRoot);
+  return name;
+}
 
 class PIExtension {
   private projectRoot: string;
+  private projectId: string;
   private config: ExtensionConfig;
   private watcher: fs.FSWatcher | null = null;
   private server: http.Server | null = null;
-  private daemon: ChildProcess | null = null;
   private isRunning: boolean = false;
   private lastSync: number = 0;
   private pendingSync: NodeJS.Timeout | null = null;
@@ -72,8 +99,14 @@ class PIExtension {
 
   constructor(projectRoot: string, config: Partial<ExtensionConfig> = {}) {
     this.projectRoot = projectRoot;
+    this.projectId = getProjectId(projectRoot);
     this.config = { ...defaultConfig, ...config };
-    this.pidFile = path.join(PI_DIR, 'extension.pid');
+    
+    // Use project-specific port
+    this.config.port = generatePort(projectRoot, config.port);
+    
+    // Project-specific PID file
+    this.pidFile = path.join(PI_DIR, `extension.${this.projectId}.pid`);
     this.cliPath = this.findCliPath();
   }
 
@@ -96,21 +129,26 @@ class PIExtension {
   async start(): Promise<void> {
     // Check if already running
     if (this.isPidRunning()) {
-      log.warn('PI Extension already running. Run "pi agent stop" first.');
+      log.warn(`[${this.projectId}] PI Extension already running on port ${this.config.port}`);
       return;
     }
 
     // Ensure .pi exists
     if (!fs.existsSync(path.join(this.projectRoot, PI_DIR))) {
-      log.info('Initializing .pi/ directory...');
+      log.info(`[${this.projectId}] Initializing .pi/ directory...`);
       this.runCli('init');
     }
 
-    // Save PID
-    fs.writeFileSync(this.pidFile, String(process.pid));
+    // Save PID and port
+    fs.writeFileSync(this.pidFile, JSON.stringify({
+      pid: process.pid,
+      port: this.config.port,
+      projectRoot: this.projectRoot,
+      startedAt: new Date().toISOString(),
+    }));
 
     this.isRunning = true;
-    log.success('PI Extension started');
+    log.success(`[${this.projectId}] PI Extension started (port ${this.config.port})`);
 
     // Initial sync
     await this.sync();
@@ -135,8 +173,9 @@ class PIExtension {
     // Setup signal handlers
     this.setupSignals();
 
-    log.info('Automatic context management active');
-    log.info('Press Ctrl+C or run "pi agent stop" to stop');
+    log.info(`[${this.projectId}] Automatic context management active`);
+    log.info(`[${this.projectId}] API: http://localhost:${this.config.port}`);
+    log.info(`[${this.projectId}] Press Ctrl+C to stop`);
   }
 
   /**
@@ -144,14 +183,13 @@ class PIExtension {
    */
   stop(): void {
     if (!this.isRunning) {
-      log.info('PI Extension not running');
+      log.info(`[${this.projectId}] PI Extension not running`);
       return;
     }
 
     if (this.pendingSync) clearTimeout(this.pendingSync);
     if (this.watcher) this.watcher.close();
     if (this.server) this.server.close();
-    if (this.daemon) this.daemon.kill();
     
     // Remove PID file
     if (fs.existsSync(this.pidFile)) {
@@ -159,7 +197,7 @@ class PIExtension {
     }
 
     this.isRunning = false;
-    log.success('PI Extension stopped');
+    log.success(`[${this.projectId}] PI Extension stopped`);
   }
 
   /**
@@ -179,13 +217,13 @@ class PIExtension {
     if (now - this.lastSync < 3000) return;
 
     this.lastSync = now;
-    log.info('Syncing...');
+    log.info(`[${this.projectId}] Syncing...`);
 
     try {
       this.runCli('sync', ['--scope', 'all']);
-      log.success('Sync complete');
+      log.success(`[${this.projectId}] Sync complete`);
     } catch (error) {
-      log.error('Sync failed: ' + String(error));
+      log.error(`[${this.projectId}] Sync failed: ${String(error)}`);
     }
   }
 
@@ -207,13 +245,12 @@ class PIExtension {
         
         debounceTimer = setTimeout(async () => {
           const relativePath = path.relative(this.projectRoot, filePath);
-          log.info('Change detected: ' + relativePath);
+          log.info(`[${this.projectId}] Change: ${relativePath}`);
           await this.sync();
         }, this.config.autoSyncDelay);
       }
     };
 
-    // Recursively watch all directories
     const watchDir = (dir: string) => {
       try {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -226,7 +263,6 @@ class PIExtension {
           }
         }
         
-        // Watch this directory
         fs.watch(dir, (eventType, filename) => {
           if (filename) {
             const filePath = path.join(dir, filename);
@@ -239,7 +275,7 @@ class PIExtension {
     };
 
     watchDir(this.projectRoot);
-    log.success('File watcher active');
+    log.success(`[${this.projectId}] File watcher active`);
   }
 
   /**
@@ -250,43 +286,25 @@ class PIExtension {
     if (!fs.existsSync(hooksDir)) return;
 
     const cli = this.cliPath;
+    const port = this.config.port;
 
-    // Post-commit hook
-    const postCommitHook = [
+    const hookTemplate = (action: string, command: string) => [
       '#!/bin/sh',
-      '# PI Extension: Auto-update summary after commit',
-      'if [ -f "' + cli + '" ]; then',
-      '  node "' + cli + '" summarize 2>/dev/null || true',
+      `# PI Extension [${this.projectId}]: ${action}`,
+      `if [ -f "${cli}" ]; then`,
+      `  node "${cli}" ${command} 2>/dev/null || true`,
       'fi',
     ].join('\n');
 
-    // Post-merge hook (after pull)
-    const postMergeHook = [
-      '#!/bin/sh',
-      '# PI Extension: Sync after pull',
-      'if [ -f "' + cli + '" ]; then',
-      '  node "' + cli + '" sync 2>/dev/null || true',
-      'fi',
-    ].join('\n');
-
-    // Post-checkout hook
-    const postCheckoutHook = [
-      '#!/bin/sh',
-      '# PI Extension: Sync after checkout',
-      'if [ -f "' + cli + '" ]; then',
-      '  node "' + cli + '" sync 2>/dev/null || true',
-      'fi',
-    ].join('\n');
-
-    fs.writeFileSync(path.join(hooksDir, 'post-commit'), postCommitHook);
-    fs.writeFileSync(path.join(hooksDir, 'post-merge'), postMergeHook);
-    fs.writeFileSync(path.join(hooksDir, 'post-checkout'), postCheckoutHook);
+    fs.writeFileSync(path.join(hooksDir, 'post-commit'), hookTemplate('post-commit', 'summarize'));
+    fs.writeFileSync(path.join(hooksDir, 'post-merge'), hookTemplate('post-merge', 'sync'));
+    fs.writeFileSync(path.join(hooksDir, 'post-checkout'), hookTemplate('post-checkout', 'sync'));
 
     ['post-commit', 'post-merge', 'post-checkout'].forEach(hook => {
       fs.chmodSync(path.join(hooksDir, hook), 0o755);
     });
 
-    log.success('Git hooks installed');
+    log.success(`[${this.projectId}] Git hooks installed`);
   }
 
   /**
@@ -304,14 +322,19 @@ class PIExtension {
         return;
       }
 
-      const url = new URL(req.url || '/', 'http://localhost:' + PORT);
+      const url = new URL(req.url || '/', `http://localhost:${this.config.port}`);
       const pathname = url.pathname;
 
       try {
         switch (pathname) {
           case '/health':
             res.writeHead(200);
-            res.end(JSON.stringify({ status: 'ok', running: this.isRunning }));
+            res.end(JSON.stringify({ 
+              status: 'ok', 
+              running: this.isRunning,
+              project: this.projectId,
+              port: this.config.port,
+            }));
             break;
           case '/context':
             await this.handleContext(req, res);
@@ -327,6 +350,8 @@ class PIExtension {
             res.end(JSON.stringify({
               name: 'PI Extension',
               version: '0.1.0',
+              project: this.projectId,
+              port: this.config.port,
               endpoints: ['/health', '/context', '/status', '/sync'],
             }));
         }
@@ -336,8 +361,8 @@ class PIExtension {
       }
     });
 
-    this.server.listen(PORT, () => {
-      log.success('HTTP API available at http://localhost:' + PORT);
+    this.server.listen(this.config.port, '127.0.0.1', () => {
+      log.success(`[${this.projectId}] HTTP API at http://localhost:${this.config.port}`);
     });
   }
 
@@ -359,16 +384,19 @@ class PIExtension {
     res.end(JSON.stringify({ synced: true }));
   }
 
-  /**
-   * Show status bar info
-   */
   private showStatusBar(): void {
     const statusFile = path.join(PI_DIR, 'status.json');
     
     const updateStatus = () => {
       try {
         const statusOutput = this.runCli('status', ['--json']);
-        fs.writeFileSync(statusFile, statusOutput);
+        const statusData = JSON.parse(statusOutput);
+        statusData._meta = {
+          project: this.projectId,
+          port: this.config.port,
+          updatedAt: new Date().toISOString(),
+        };
+        fs.writeFileSync(statusFile, JSON.stringify(statusData, null, 2));
       } catch {
         // Ignore
       }
@@ -378,12 +406,9 @@ class PIExtension {
     setInterval(updateStatus, 30000);
   }
 
-  /**
-   * Run PI CLI command
-   */
   private runCli(command: string, args: string[] = []): string {
     if (!fs.existsSync(this.cliPath)) {
-      throw new Error('CLI not found at ' + this.cliPath + '. Run: npm run build');
+      throw new Error('CLI not found. Run: npm run build');
     }
 
     try {
@@ -398,9 +423,6 @@ class PIExtension {
     }
   }
 
-  /**
-   * Setup signal handlers
-   */
   private setupSignals(): void {
     const cleanup = () => this.stop();
     process.on('SIGINT', cleanup);
@@ -408,15 +430,12 @@ class PIExtension {
     process.on('exit', cleanup);
   }
 
-  /**
-   * Check if PID is running
-   */
   private isPidRunning(): boolean {
     if (!fs.existsSync(this.pidFile)) return false;
     
     try {
-      const pid = parseInt(fs.readFileSync(this.pidFile, 'utf-8'));
-      process.kill(pid, 0);
+      const data = JSON.parse(fs.readFileSync(this.pidFile, 'utf-8'));
+      process.kill(data.pid, 0);
       return true;
     } catch {
       if (fs.existsSync(this.pidFile)) {
@@ -426,20 +445,61 @@ class PIExtension {
     }
   }
 
-  /**
-   * Check if extension is running
-   */
   isActive(): boolean {
     return this.isRunning && this.isPidRunning();
   }
+
+  getPort(): number {
+    return this.config.port;
+  }
+
+  getProjectId(): string {
+    return this.projectId;
+  }
+}
+
+/**
+ * List all running PI Extensions
+ */
+function listRunningExtensions(projectRoot: string): void {
+  const piDir = path.join(projectRoot, PI_DIR);
+  
+  console.log('\nRunning PI Extensions:\n');
+  
+  let found = false;
+  try {
+    const files = fs.readdirSync(piDir);
+    for (const file of files) {
+      if (file.startsWith('extension.') && file.endsWith('.pid')) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(piDir, file), 'utf-8'));
+          console.log(`  ${data.project || 'unknown'} | port ${data.port} | PID ${data.pid}`);
+          found = true;
+        } catch {
+          // Invalid PID file
+        }
+      }
+    }
+  } catch {
+    // .pi dir doesn't exist
+  }
+  
+  if (!found) {
+    console.log('  No extensions running');
+  }
+  console.log('');
 }
 
 async function main() {
-  const projectRoot = process.cwd();
   const args = process.argv.slice(2);
   const action = args[0] || 'help';
+  const projectRoot = process.cwd();
 
-  const extension = new PIExtension(projectRoot);
+  // Parse port option
+  const portIndex = args.indexOf('--port');
+  const port = portIndex !== -1 ? parseInt(args[portIndex + 1]) : undefined;
+
+  const extension = new PIExtension(projectRoot, { port });
 
   switch (action) {
     case 'start':
@@ -457,10 +517,14 @@ async function main() {
 
     case 'status':
       if (extension.isActive()) {
-        log.success('PI Extension is running');
+        log.success(`[${extension.getProjectId()}] PI Extension running on port ${extension.getPort()}`);
       } else {
-        log.info('PI Extension is not running');
+        log.info(`[${extension.getProjectId()}] PI Extension not running (port ${port || 'auto'})`);
       }
+      break;
+
+    case 'list':
+      listRunningExtensions(projectRoot);
       break;
 
     case 'sync':
@@ -469,36 +533,57 @@ async function main() {
 
     case 'help':
     default:
-      console.log(`
+      if (action !== 'help') {
+        log.info('Unknown command: ' + action);
+      }
+      printAgentHelp();
+  }
+}
+
+function printAgentHelp() {
+  console.log(`
 PI Extension - Automatic Project Context
 
 Usage: pi agent <command>
 
 Commands:
-  start    Start the PI Extension (runs in background)
+  start    Start the PI Extension
   stop     Stop the PI Extension
   restart  Restart the PI Extension
   status   Check if extension is running
+  list     List all running extensions
   sync     Trigger immediate sync
+
+Options:
+  --port N  Use specific port (default: auto-assigned)
 
 Features (enabled by default):
   - File watcher - auto-syncs graphs on file changes
   - Git hooks - syncs after commits, pulls, checkouts
-  - HTTP API - query context via http://localhost:4732
+  - HTTP API - query context via localhost
   - Status updates - updates .pi/status.json every 30s
 
-API Endpoints:
+Multiple Projects:
+  Each project gets its own port automatically.
+  Run 'pi agent list' to see all running instances.
+  Query specific project: curl http://localhost:PORT/context
+
+API Endpoints (per project):
   GET /health    - Health check
   GET /context   - Full runtime context
   GET /status    - Project status
   GET /sync      - Trigger sync
-      `);
-  }
+  `);
 }
 
-main().catch(error => {
-  log.error(String(error));
-  process.exit(1);
-});
+// Only run main if this file is executed directly
+const isMain = process.argv[1]?.endsWith('agent.js') || process.argv[1]?.endsWith('agent.ts');
 
-export { PIExtension };
+if (isMain) {
+  main().catch(error => {
+    log.error(String(error));
+    process.exit(1);
+  });
+}
+
+export { PIExtension, listRunningExtensions };

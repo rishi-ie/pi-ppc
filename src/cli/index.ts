@@ -63,7 +63,7 @@ async function main() {
 
       case 'agent':
         await runAgent(args.slice(1));
-        break;
+        return;
 
       case 'help':
       default:
@@ -145,9 +145,35 @@ async function runSync(options: CLIOptions) {
 }
 
 async function runAgent(args: string[]) {
-  const { PIExtension } = await import('../integrations/extension-system/agent.js');
-  const extension = new PIExtension(process.cwd());
-  const action = args[0] || 'help';
+  const { PIExtension, listRunningExtensions } = await import('../integrations/extension-system/agent.js');
+  
+  // Parse port option - handle both --port N and --port=N
+  const portIndex = args.indexOf('--port');
+  let port: number | undefined;
+  if (portIndex !== -1 && portIndex + 1 < args.length) {
+    const portArg = args[portIndex + 1];
+    if (!portArg.startsWith('-')) {
+      port = parseInt(portArg);
+    }
+  }
+  const portEqualsMatch = args.find(a => a.startsWith('--port='));
+  if (portEqualsMatch) {
+    port = parseInt(portEqualsMatch.split('=')[1]);
+  }
+  
+  // Filter out option args and their values to get the action
+  const filteredArgs = args.filter((a, i) => {
+    // Skip --port and its value
+    if (a === '--port') return false;
+    if (i > 0 && args[i - 1] === '--port') return false;
+    // Skip --port=N
+    if (a.startsWith('--port=')) return false;
+    return true;
+  });
+  
+  const action = filteredArgs[0] || 'help';
+  
+  const extension = new PIExtension(process.cwd(), { port });
 
   switch (action) {
     case 'start':
@@ -162,35 +188,50 @@ async function runAgent(args: string[]) {
       break;
     case 'status':
       if (extension.isActive()) {
-        console.log('PI Extension is running');
+        console.log('PI Extension running on port ' + extension.getPort());
       } else {
-        console.log('PI Extension is not running');
+        console.log('PI Extension not running');
       }
+      break;
+    case 'list':
+      listRunningExtensions(process.cwd());
       break;
     case 'sync':
       await extension.sync();
       break;
     case 'help':
     default:
+      if (action !== 'help') {
+        console.log('Unknown command: ' + action);
+      }
       console.log(`
 PI Extension - Automatic Project Context
 
 Usage: pi agent <command>
 
 Commands:
-  start    Start the PI Extension (runs in background)
-  stop     Stop the PI Extension
-  restart  Restart the PI Extension
-  status   Check if extension is running
-  sync     Trigger immediate sync
+  start       Start the PI Extension
+  stop        Stop the PI Extension
+  restart     Restart the PI Extension
+  status      Check if extension is running
+  list        List all running extensions
+  sync        Trigger immediate sync
+
+Options:
+  --port N    Use specific port (default: auto-assigned)
 
 Features (enabled by default):
-  • File watcher - auto-syncs graphs on file changes
-  • Git hooks - syncs after commits, pulls, checkouts
-  • HTTP API - query context via http://localhost:4732
-  • Status updates - updates .pi/status.json every 30s
+  - File watcher - auto-syncs graphs on file changes
+  - Git hooks - syncs after commits, pulls, checkouts
+  - HTTP API - query context via localhost
+  - Status updates - updates .pi/status.json every 30s
 
-API Endpoints:
+Multiple Projects:
+  Each project gets its own port automatically.
+  Run 'pi agent list' to see all running instances.
+  Query: curl http://localhost:PORT/context
+
+API Endpoints (per project):
   GET /health    - Health check
   GET /context   - Full runtime context
   GET /status    - Project status
@@ -240,11 +281,12 @@ GLOBAL OPTIONS
 EXAMPLES
   pi init                           Initialize project
   pi context --json                 Get full context as JSON
-  pi context --relevant auth        Find relevant memories about auth
+  pi context --relevant auth       Find relevant memories about auth
   pi status                         Show project status
   pi sync --verbose                 Sync and update all graphs
   pi memory --section beliefs       Show beliefs
-  pi agent start                     Start auto-watcher & API
+  pi agent start                    Start auto-watcher & API
+  pi agent list                     List all running extensions
   curl http://localhost:4732/context  Query context via API
   `);
 }
