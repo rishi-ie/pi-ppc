@@ -27,6 +27,31 @@ Traditional agent sessions start with a blank slate. PI changes that:
 | Context scattered across readmes | Context assembled from structured files |
 | New agent must re-learn codebase | New agent reconstructs context from graphs |
 
+## Quick Start
+
+### Installation
+
+```bash
+npm install pi-ppc
+```
+
+### Initialize a Project
+
+```bash
+pi init
+```
+
+### Start Automatic Mode
+
+```bash
+pi agent start
+```
+
+This starts the PI Extension which runs in the background and automatically:
+- Syncs graphs when files change
+- Installs git hooks for auto-sync
+- Provides an HTTP API on port 4732
+
 ## Project Structure
 
 ```
@@ -78,31 +103,18 @@ Traditional agent sessions start with a blank slate. PI changes that:
 └── cache/                    # Cached data
 ```
 
-## Quick Start
+## Commands
 
-### Installation
-
-```bash
-npm install -g pi-ppc
-# or
-npm install pi-ppc
-```
-
-### Initialize a Project
+### Basic Commands
 
 ```bash
+# Initialize .pi/ directory
 pi init
-```
 
-This creates the `.pi/` directory structure with starter templates.
-
-### Core Commands
-
-```bash
 # Build runtime context for a new session
 pi context
 
-# Show project status
+# Show project status dashboard
 pi status
 
 # Update symbol/dependency/file graphs
@@ -113,6 +125,63 @@ pi memory
 
 # Distill recent activity into memory
 pi summarize
+```
+
+### Agent Commands (Automatic Mode)
+
+```bash
+# Start the PI Extension (auto-sync, git hooks, HTTP API)
+pi agent start
+
+# Stop the extension
+pi agent stop
+
+# Check if running
+pi agent status
+
+# Trigger manual sync
+pi agent sync
+
+# Restart the extension
+pi agent restart
+```
+
+## PI Extension (Automatic Mode)
+
+The PI Extension runs in the background and provides fully automatic context management:
+
+### Features
+
+- **File Watcher** - Automatically syncs graphs when source files change
+- **Git Hooks** - Syncs after commits, pulls, and checkouts
+- **HTTP API** - Query context via HTTP requests
+- **Status Updates** - Keeps `.pi/status.json` current
+
+### HTTP API
+
+When running `pi agent start`, an HTTP API is available at `http://localhost:4732`:
+
+```bash
+# Health check
+curl http://localhost:4732/health
+
+# Get full runtime context
+curl http://localhost:4732/context | jq .
+
+# Get project status
+curl http://localhost:4732/status | jq .
+
+# Trigger a sync
+curl -X POST http://localhost:4732/sync
+```
+
+### Integration with AI Agents
+
+AI agents can query context directly:
+
+```bash
+# Get context as JSON for agent startup
+curl http://localhost:4732/context
 ```
 
 ## Commands in Detail
@@ -164,7 +233,6 @@ Displays a visual dashboard of project state:
      • Create login page
   ⏳ Pending (5):
      • Add password reset flow
-     • ...
 
 📊 Progress
 ──────────────────────────────
@@ -241,8 +309,9 @@ src/
 │   └── summarize.ts
 │
 └── integrations/              # Integration points
-    ├── vscode.ts              # VS Code extension hooks
-    └── git.ts                 # Git integration
+    ├── git.ts                 # Git integration
+    └── extension-system/     # Background agent
+        └── agent.ts           # Auto-sync, HTTP API, file watcher
 ```
 
 ## Design Principles

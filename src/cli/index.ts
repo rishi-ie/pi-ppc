@@ -24,7 +24,6 @@ async function main() {
   const command = args[0] || 'help';
   const projectRoot = process.cwd();
 
-  // Parse global options
   const options: CLIOptions = {
     command,
     projectRoot,
@@ -60,6 +59,10 @@ async function main() {
 
       case 'sync':
         await runSync(options);
+        break;
+
+      case 'agent':
+        await runAgent(args.slice(1));
         break;
 
       case 'help':
@@ -141,6 +144,61 @@ async function runSync(options: CLIOptions) {
   console.log(result);
 }
 
+async function runAgent(args: string[]) {
+  const { PIExtension } = await import('../integrations/extension-system/agent.js');
+  const extension = new PIExtension(process.cwd());
+  const action = args[0] || 'help';
+
+  switch (action) {
+    case 'start':
+      await extension.start();
+      await new Promise(() => {});
+      break;
+    case 'stop':
+      extension.stop();
+      break;
+    case 'restart':
+      await extension.restart();
+      break;
+    case 'status':
+      if (extension.isActive()) {
+        console.log('PI Extension is running');
+      } else {
+        console.log('PI Extension is not running');
+      }
+      break;
+    case 'sync':
+      await extension.sync();
+      break;
+    case 'help':
+    default:
+      console.log(`
+PI Extension - Automatic Project Context
+
+Usage: pi agent <command>
+
+Commands:
+  start    Start the PI Extension (runs in background)
+  stop     Stop the PI Extension
+  restart  Restart the PI Extension
+  status   Check if extension is running
+  sync     Trigger immediate sync
+
+Features (enabled by default):
+  • File watcher - auto-syncs graphs on file changes
+  • Git hooks - syncs after commits, pulls, checkouts
+  • HTTP API - query context via http://localhost:4732
+  • Status updates - updates .pi/status.json every 30s
+
+API Endpoints:
+  GET /health    - Health check
+  GET /context   - Full runtime context
+  GET /status    - Project status
+  GET /sync      - Trigger sync
+      `);
+  }
+}
+
 function getOption(args: string[], longForm: string, shortForm?: string): string | undefined {
   const index = args.findIndex(a => a === longForm || (shortForm && a === shortForm));
   if (index === -1 || index + 1 >= args.length) return undefined;
@@ -171,6 +229,7 @@ COMMANDS
   memory       Display current beliefs, decisions, entities, events
   status       Show current focus, tasks, questions, progress
   sync         Update symbol, dependency, and file graphs
+  agent        Start automatic background context management
 
 GLOBAL OPTIONS
   --json       Output in JSON format
@@ -180,11 +239,13 @@ GLOBAL OPTIONS
 
 EXAMPLES
   pi init                           Initialize project
-  pi context --json                Get full context as JSON
-  pi context --relevant auth      Find relevant memories about auth
-  pi status                        Show project status
-  pi sync --verbose                Sync and update all graphs
-  pi memory --section beliefs      Show beliefs
+  pi context --json                 Get full context as JSON
+  pi context --relevant auth        Find relevant memories about auth
+  pi status                         Show project status
+  pi sync --verbose                 Sync and update all graphs
+  pi memory --section beliefs       Show beliefs
+  pi agent start                     Start auto-watcher & API
+  curl http://localhost:4732/context  Query context via API
   `);
 }
 
