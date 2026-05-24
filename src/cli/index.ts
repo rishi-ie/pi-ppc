@@ -145,35 +145,10 @@ async function runSync(options: CLIOptions) {
 }
 
 async function runAgent(args: string[]) {
-  const { PIExtension, listRunningExtensions } = await import('../integrations/extension-system/agent.js');
+  const { PIExtension, listRunningAgents } = await import('../integrations/extension-system/agent.js');
   
-  // Parse port option - handle both --port N and --port=N
-  const portIndex = args.indexOf('--port');
-  let port: number | undefined;
-  if (portIndex !== -1 && portIndex + 1 < args.length) {
-    const portArg = args[portIndex + 1];
-    if (!portArg.startsWith('-')) {
-      port = parseInt(portArg);
-    }
-  }
-  const portEqualsMatch = args.find(a => a.startsWith('--port='));
-  if (portEqualsMatch) {
-    port = parseInt(portEqualsMatch.split('=')[1]);
-  }
-  
-  // Filter out option args and their values to get the action
-  const filteredArgs = args.filter((a, i) => {
-    // Skip --port and its value
-    if (a === '--port') return false;
-    if (i > 0 && args[i - 1] === '--port') return false;
-    // Skip --port=N
-    if (a.startsWith('--port=')) return false;
-    return true;
-  });
-  
-  const action = filteredArgs[0] || 'help';
-  
-  const extension = new PIExtension(process.cwd(), { port });
+  const action = args[0] || 'help';
+  const extension = new PIExtension(process.cwd());
 
   switch (action) {
     case 'start':
@@ -184,17 +159,21 @@ async function runAgent(args: string[]) {
       extension.stop();
       break;
     case 'restart':
-      await extension.restart();
+      extension.stop();
+      await new Promise(r => setTimeout(r, 500));
+      await extension.start();
       break;
-    case 'status':
-      if (extension.isActive()) {
-        console.log('PI Extension running on port ' + extension.getPort());
+    case 'status': {
+      const statusExt = new PIExtension(process.cwd());
+      if (statusExt.isActive()) {
+        console.log('  PI Agent running (' + statusExt.getProjectId() + ')');
       } else {
-        console.log('PI Extension not running');
+        console.log('  PI Agent not running');
       }
       break;
+    }
     case 'list':
-      listRunningExtensions(process.cwd());
+      listRunningAgents(process.cwd());
       break;
     case 'sync':
       await extension.sync();

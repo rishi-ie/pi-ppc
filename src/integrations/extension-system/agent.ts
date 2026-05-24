@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * PI Extension System - Automatic background context management
+ * PI Extension System - Self-managing background process
  * 
- * Supports multiple projects in parallel:
- * - Each project uses a unique port (auto-assigned based on path hash or manual)
- * - PID files are project-specific (in .pi/ directory)
- * - HTTP API bound to localhost with project-specific port
+ * No ports, no network - just files and signals
  * 
- * Usage: pi agent start [--port 4733]
+ * Architecture:
+ * - PID file in .pi/ contains state
+ * - Status file in .pi/ updated every 30s
+ * - File watcher triggers syncs on changes
+ * - Git hooks trigger syncs on commits
+ * - Use 'pi agent status' to check if running
+ * - Use 'pi context' directly for context queries
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import * as http from 'http';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PI_DIR = '.pi';
-const DEFAULT_PORT = 4732;
 const DEBOUNCE_MS = 2000;
 
-// Colors for output
 const colors = {
   reset: '\x1b[0m',
   dim: '\x1b[2m',
@@ -45,44 +45,29 @@ interface ExtensionConfig {
   autoSync: boolean;
   autoSyncDelay: number;
   gitHooks: boolean;
-  httpApi: boolean;
-  statusBar: boolean;
-  port: number;
+  statusUpdates: boolean;
 }
 
 const defaultConfig: ExtensionConfig = {
   autoSync: true,
   autoSyncDelay: DEBOUNCE_MS,
   gitHooks: true,
-  httpApi: true,
-  statusBar: true,
-  port: DEFAULT_PORT,
+  statusUpdates: true,
 };
 
 /**
- * Generate a unique port based on project path
- */
-function generatePort(projectRoot: string, preferredPort?: number): number {
-  if (preferredPort) return preferredPort;
-  
-  // Hash the project path to get a consistent port in range 4732-4932
-  let hash = 0;
-  for (let i = 0; i < projectRoot.length; i++) {
-    const char = projectRoot.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
-  }
-  
-  // Map hash to port range 4732-4932 (200 possible ports)
-  return 4732 + Math.abs(hash % 200);
-}
-
-/**
- * Get project identifier (for display/logs)
+ * Get project identifier for PID files
  */
 function getProjectId(projectRoot: string): string {
-  const name = path.basename(projectRoot);
-  return name;
+  return path.basename(projectRoot);
+}
+
+interface AgentState {
+  pid: number;
+  startedAt: string;
+  lastSync: string;
+  projectRoot: string;
+  status: 'running' | 'stopped';
 }
 
 class PIExtension {
@@ -90,23 +75,17 @@ class PIExtension {
   private projectId: string;
   private config: ExtensionConfig;
   private watcher: fs.FSWatcher | null = null;
-  private server: http.Server | null = null;
   private isRunning: boolean = false;
   private lastSync: number = 0;
   private pendingSync: NodeJS.Timeout | null = null;
-  private pidFile: string;
+  private stateFile: string;
   private cliPath: string;
 
   constructor(projectRoot: string, config: Partial<ExtensionConfig> = {}) {
     this.projectRoot = projectRoot;
     this.projectId = getProjectId(projectRoot);
     this.config = { ...defaultConfig, ...config };
-    
-    // Use project-specific port
-    this.config.port = generatePort(projectRoot, config.port);
-    
-    // Project-specific PID file
-    this.pidFile = path.join(PI_DIR, `extension.${this.projectId}.pid`);
+    this.stateFile = path.join(PI_DIR, `agent.${this.projectId}.state.json`);
     this.cliPath = this.findCliPath();
   }
 
@@ -123,32 +102,71 @@ class PIExtension {
     return paths[0];
   }
 
+  private getState(): AgentState | null {
+    if (!fs.existsSync(this.stateFile)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(this.stateFile, 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
+
+  private setState(state: Partial<AgentState>): void {
+    const current = this.getState() || {
+      pid: 0,
+      startedAt: '',
+      lastSync: '',
+      projectRoot: this.projectRoot,
+      status: 'stopped' as const,
+    };
+    const updated = { ...current, ...state };
+    fs.writeFileSync(this.stateFile, JSON.stringify(updated, null, 2));
+  }
+
   /**
-   * Start the extension
+   * Check if agent is already running
+   */
+  isActive(): boolean {
+    const state = this.getState();
+    if (!state || state.status !== 'running') return false;
+    
+    try {
+      process.kill(state.pid, 0);
+      return true;
+    } catch {
+      // Process not running, clean up
+      this.setState({ status: 'stopped' });
+      return false;
+    }
+  }
+
+  /**
+   * Start the agent
    */
   async start(): Promise<void> {
-    // Check if already running
-    if (this.isPidRunning()) {
-      log.warn(`[${this.projectId}] PI Extension already running on port ${this.config.port}`);
+    if (this.isActive()) {
+      const state = this.getState();
+      log.warn(`[${this.projectId}] PI Agent already running (PID ${state?.pid})`);
       return;
     }
 
     // Ensure .pi exists
     if (!fs.existsSync(path.join(this.projectRoot, PI_DIR))) {
-      log.info(`[${this.projectId}] Initializing .pi/ directory...`);
+      log.info(`[${this.projectId}] Initializing .pi/...`);
       this.runCli('init');
     }
 
-    // Save PID and port
-    fs.writeFileSync(this.pidFile, JSON.stringify({
+    // Save state
+    this.setState({
       pid: process.pid,
-      port: this.config.port,
-      projectRoot: this.projectRoot,
       startedAt: new Date().toISOString(),
-    }));
+      lastSync: new Date().toISOString(),
+      projectRoot: this.projectRoot,
+      status: 'running',
+    });
 
     this.isRunning = true;
-    log.success(`[${this.projectId}] PI Extension started (port ${this.config.port})`);
+    log.success(`[${this.projectId}] PI Agent started`);
 
     // Initial sync
     await this.sync();
@@ -162,66 +180,44 @@ class PIExtension {
       this.installGitHooks();
     }
 
-    if (this.config.httpApi) {
-      this.startHttpApi();
-    }
-
-    if (this.config.statusBar) {
-      this.showStatusBar();
+    if (this.config.statusUpdates) {
+      this.startStatusUpdates();
     }
 
     // Setup signal handlers
     this.setupSignals();
 
-    log.info(`[${this.projectId}] Automatic context management active`);
-    log.info(`[${this.projectId}] API: http://localhost:${this.config.port}`);
+    log.info(`[${this.projectId}] Watching for changes...`);
+    log.info(`[${this.projectId}] Run 'pi agent status' to check`);
     log.info(`[${this.projectId}] Press Ctrl+C to stop`);
   }
 
   /**
-   * Stop the extension
+   * Stop the agent
    */
   stop(): void {
-    if (!this.isRunning) {
-      log.info(`[${this.projectId}] PI Extension not running`);
-      return;
-    }
+    this.setState({ status: 'stopped' });
 
     if (this.pendingSync) clearTimeout(this.pendingSync);
     if (this.watcher) this.watcher.close();
-    if (this.server) this.server.close();
-    
-    // Remove PID file
-    if (fs.existsSync(this.pidFile)) {
-      fs.unlinkSync(this.pidFile);
-    }
-
     this.isRunning = false;
-    log.success(`[${this.projectId}] PI Extension stopped`);
+    
+    log.success(`[${this.projectId}] PI Agent stopped`);
   }
 
   /**
-   * Restart the extension
-   */
-  async restart(): Promise<void> {
-    this.stop();
-    await new Promise(r => setTimeout(r, 500));
-    await this.start();
-  }
-
-  /**
-   * Sync all graphs
+   * Sync graphs
    */
   async sync(): Promise<void> {
     const now = Date.now();
     if (now - this.lastSync < 3000) return;
 
     this.lastSync = now;
-    log.info(`[${this.projectId}] Syncing...`);
-
+    this.setState({ lastSync: new Date().toISOString() });
+    
     try {
-      this.runCli('sync', ['--scope', 'all']);
-      log.success(`[${this.projectId}] Sync complete`);
+      this.runCli('sync');
+      this.setState({ lastSync: new Date().toISOString() });
     } catch (error) {
       log.error(`[${this.projectId}] Sync failed: ${String(error)}`);
     }
@@ -245,7 +241,7 @@ class PIExtension {
         
         debounceTimer = setTimeout(async () => {
           const relativePath = path.relative(this.projectRoot, filePath);
-          log.info(`[${this.projectId}] Change: ${relativePath}`);
+          log.info(`[${this.projectId}] ${relativePath} changed`);
           await this.sync();
         }, this.config.autoSyncDelay);
       }
@@ -265,17 +261,15 @@ class PIExtension {
         
         fs.watch(dir, (eventType, filename) => {
           if (filename) {
-            const filePath = path.join(dir, filename);
-            onChange(filePath);
+            onChange(path.join(dir, filename));
           }
         });
       } catch {
-        // Ignore permission errors
+        // Ignore
       }
     };
 
     watchDir(this.projectRoot);
-    log.success(`[${this.projectId}] File watcher active`);
   }
 
   /**
@@ -286,19 +280,18 @@ class PIExtension {
     if (!fs.existsSync(hooksDir)) return;
 
     const cli = this.cliPath;
-    const port = this.config.port;
 
-    const hookTemplate = (action: string, command: string) => [
+    const hookScript = [
       '#!/bin/sh',
-      `# PI Extension [${this.projectId}]: ${action}`,
+      `# PI Agent [${this.projectId}]`,
       `if [ -f "${cli}" ]; then`,
-      `  node "${cli}" ${command} 2>/dev/null || true`,
+      `  node "${cli}" sync 2>/dev/null || true`,
       'fi',
     ].join('\n');
 
-    fs.writeFileSync(path.join(hooksDir, 'post-commit'), hookTemplate('post-commit', 'summarize'));
-    fs.writeFileSync(path.join(hooksDir, 'post-merge'), hookTemplate('post-merge', 'sync'));
-    fs.writeFileSync(path.join(hooksDir, 'post-checkout'), hookTemplate('post-checkout', 'sync'));
+    fs.writeFileSync(path.join(hooksDir, 'post-commit'), hookScript);
+    fs.writeFileSync(path.join(hooksDir, 'post-merge'), hookScript);
+    fs.writeFileSync(path.join(hooksDir, 'post-checkout'), hookScript);
 
     ['post-commit', 'post-merge', 'post-checkout'].forEach(hook => {
       fs.chmodSync(path.join(hooksDir, hook), 0o755);
@@ -308,118 +301,35 @@ class PIExtension {
   }
 
   /**
-   * Start HTTP API
+   * Start periodic status updates
    */
-  private startHttpApi(): void {
-    this.server = http.createServer(async (req, res) => {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-      res.setHeader('Content-Type', 'application/json');
-
-      if (req.method === 'OPTIONS') {
-        res.writeHead(200);
-        res.end();
-        return;
-      }
-
-      const url = new URL(req.url || '/', `http://localhost:${this.config.port}`);
-      const pathname = url.pathname;
-
-      try {
-        switch (pathname) {
-          case '/health':
-            res.writeHead(200);
-            res.end(JSON.stringify({ 
-              status: 'ok', 
-              running: this.isRunning,
-              project: this.projectId,
-              port: this.config.port,
-            }));
-            break;
-          case '/context':
-            await this.handleContext(req, res);
-            break;
-          case '/status':
-            await this.handleStatus(req, res);
-            break;
-          case '/sync':
-            await this.handleSync(req, res);
-            break;
-          default:
-            res.writeHead(200);
-            res.end(JSON.stringify({
-              name: 'PI Extension',
-              version: '0.1.0',
-              project: this.projectId,
-              port: this.config.port,
-              endpoints: ['/health', '/context', '/status', '/sync'],
-            }));
-        }
-      } catch (error) {
-        res.writeHead(500);
-        res.end(JSON.stringify({ error: String(error) }));
-      }
-    });
-
-    this.server.listen(this.config.port, '127.0.0.1', () => {
-      log.success(`[${this.projectId}] HTTP API at http://localhost:${this.config.port}`);
-    });
-  }
-
-  private async handleContext(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.writeHead(200);
-    const output = this.runCli('context', ['--json']);
-    res.end(output);
-  }
-
-  private async handleStatus(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.writeHead(200);
-    const output = this.runCli('status', ['--json']);
-    res.end(output);
-  }
-
-  private async handleSync(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.writeHead(200);
-    await this.sync();
-    res.end(JSON.stringify({ synced: true }));
-  }
-
-  private showStatusBar(): void {
-    const statusFile = path.join(PI_DIR, 'status.json');
-    
-    const updateStatus = () => {
-      try {
-        const statusOutput = this.runCli('status', ['--json']);
-        const statusData = JSON.parse(statusOutput);
-        statusData._meta = {
-          project: this.projectId,
-          port: this.config.port,
-          updatedAt: new Date().toISOString(),
-        };
-        fs.writeFileSync(statusFile, JSON.stringify(statusData, null, 2));
-      } catch {
-        // Ignore
+  private startStatusUpdates(): void {
+    const update = () => {
+      if (!this.isRunning) return;
+      
+      const state = this.getState();
+      if (state?.status === 'running') {
+        // Touch the state file to indicate liveness
+        this.setState({});
       }
     };
 
-    updateStatus();
-    setInterval(updateStatus, 30000);
+    setInterval(update, 30000);
   }
 
-  private runCli(command: string, args: string[] = []): string {
+  private runCli(command: string, args: string[] = []): void {
     if (!fs.existsSync(this.cliPath)) {
       throw new Error('CLI not found. Run: npm run build');
     }
 
     try {
-      return execSync('node "' + this.cliPath + '" ' + command + ' ' + args.join(' '), {
+      execSync('node "' + this.cliPath + '" ' + command + ' ' + args.join(' '), {
         cwd: this.projectRoot,
-        encoding: 'utf-8',
+        stdio: 'ignore',
         timeout: 30000,
       });
-    } catch (error: unknown) {
-      const execError = error as { stdout?: string; stderr?: string };
-      return execError.stdout || execError.stderr || String(error);
+    } catch {
+      // Ignore sync errors
     }
   }
 
@@ -430,62 +340,46 @@ class PIExtension {
     process.on('exit', cleanup);
   }
 
-  private isPidRunning(): boolean {
-    if (!fs.existsSync(this.pidFile)) return false;
-    
-    try {
-      const data = JSON.parse(fs.readFileSync(this.pidFile, 'utf-8'));
-      process.kill(data.pid, 0);
-      return true;
-    } catch {
-      if (fs.existsSync(this.pidFile)) {
-        fs.unlinkSync(this.pidFile);
-      }
-      return false;
-    }
-  }
-
-  isActive(): boolean {
-    return this.isRunning && this.isPidRunning();
-  }
-
-  getPort(): number {
-    return this.config.port;
-  }
-
   getProjectId(): string {
     return this.projectId;
   }
 }
 
 /**
- * List all running PI Extensions
+ * List all running agents
  */
-function listRunningExtensions(projectRoot: string): void {
+function listRunningAgents(projectRoot: string): void {
   const piDir = path.join(projectRoot, PI_DIR);
   
-  console.log('\nRunning PI Extensions:\n');
+  console.log('\n  PI Agents\n  ' + '─'.repeat(40));
   
   let found = false;
   try {
     const files = fs.readdirSync(piDir);
     for (const file of files) {
-      if (file.startsWith('extension.') && file.endsWith('.pid')) {
+      if (file.startsWith('agent.') && file.endsWith('.state.json')) {
         try {
-          const data = JSON.parse(fs.readFileSync(path.join(piDir, file), 'utf-8'));
-          console.log(`  ${data.project || 'unknown'} | port ${data.port} | PID ${data.pid}`);
-          found = true;
+          const state = JSON.parse(fs.readFileSync(path.join(piDir, file), 'utf-8'));
+          if (state.status === 'running') {
+            try {
+              process.kill(state.pid, 0);
+              console.log(`  ${state.projectRoot.split('/').pop()?.padEnd(15)} PID ${state.pid}  Last sync: ${state.lastSync ? new Date(state.lastSync).toLocaleTimeString() : 'never'}`);
+              found = true;
+            } catch {
+              // Process dead
+            }
+          }
         } catch {
-          // Invalid PID file
+          // Invalid state file
         }
       }
     }
   } catch {
-    // .pi dir doesn't exist
+    // .pi doesn't exist
   }
   
   if (!found) {
-    console.log('  No extensions running');
+    console.log('  No agents running');
   }
   console.log('');
 }
@@ -495,11 +389,7 @@ async function main() {
   const action = args[0] || 'help';
   const projectRoot = process.cwd();
 
-  // Parse port option
-  const portIndex = args.indexOf('--port');
-  const port = portIndex !== -1 ? parseInt(args[portIndex + 1]) : undefined;
-
-  const extension = new PIExtension(projectRoot, { port });
+  const extension = new PIExtension(projectRoot);
 
   switch (action) {
     case 'start':
@@ -511,74 +401,58 @@ async function main() {
       extension.stop();
       break;
 
-    case 'restart':
-      await extension.restart();
-      break;
-
-    case 'status':
-      if (extension.isActive()) {
-        log.success(`[${extension.getProjectId()}] PI Extension running on port ${extension.getPort()}`);
+    case 'status': {
+      const state = extension.isActive();
+      if (state) {
+        console.log(`  PI Agent running  (${extension.getProjectId()})`);
       } else {
-        log.info(`[${extension.getProjectId()}] PI Extension not running (port ${port || 'auto'})`);
+        console.log('  PI Agent not running');
       }
       break;
+    }
 
     case 'list':
-      listRunningExtensions(projectRoot);
+      listRunningAgents(projectRoot);
       break;
 
     case 'sync':
       await extension.sync();
       break;
 
+    case 'restart':
+      extension.stop();
+      await new Promise(r => setTimeout(r, 500));
+      await extension.start();
+      break;
+
     case 'help':
     default:
-      if (action !== 'help') {
-        log.info('Unknown command: ' + action);
-      }
-      printAgentHelp();
+      console.log(`
+  PI Agent - Background Context Manager
+
+  Usage: pi agent <command>
+
+  Commands:
+    start     Start the agent (runs in background)
+    stop      Stop the agent
+    restart   Restart the agent
+    status    Check if agent is running
+    list      List all running agents
+    sync      Trigger immediate sync
+
+  No ports, no network - fully file-based.
+  State stored in .pi/agent.{project}.state.json
+
+  The agent:
+    - Watches files and auto-syncs on changes
+    - Installs git hooks for auto-sync on commits
+    - Updates .pi/state.json every 30 seconds
+    - Manages itself via PID files
+      `);
   }
 }
 
-function printAgentHelp() {
-  console.log(`
-PI Extension - Automatic Project Context
-
-Usage: pi agent <command>
-
-Commands:
-  start    Start the PI Extension
-  stop     Stop the PI Extension
-  restart  Restart the PI Extension
-  status   Check if extension is running
-  list     List all running extensions
-  sync     Trigger immediate sync
-
-Options:
-  --port N  Use specific port (default: auto-assigned)
-
-Features (enabled by default):
-  - File watcher - auto-syncs graphs on file changes
-  - Git hooks - syncs after commits, pulls, checkouts
-  - HTTP API - query context via localhost
-  - Status updates - updates .pi/status.json every 30s
-
-Multiple Projects:
-  Each project gets its own port automatically.
-  Run 'pi agent list' to see all running instances.
-  Query specific project: curl http://localhost:PORT/context
-
-API Endpoints (per project):
-  GET /health    - Health check
-  GET /context   - Full runtime context
-  GET /status    - Project status
-  GET /sync      - Trigger sync
-  `);
-}
-
-// Only run main if this file is executed directly
 const isMain = process.argv[1]?.endsWith('agent.js') || process.argv[1]?.endsWith('agent.ts');
-
 if (isMain) {
   main().catch(error => {
     log.error(String(error));
@@ -586,4 +460,4 @@ if (isMain) {
   });
 }
 
-export { PIExtension, listRunningExtensions };
+export { PIExtension, listRunningAgents };
