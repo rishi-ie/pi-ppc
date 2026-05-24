@@ -13,3 +13,5 @@ Thumbs.db
 
 # pi cache
 .pi/cache/
+# PI Agent state (runtime - don't commit)
+.pi/agent.*.state.json

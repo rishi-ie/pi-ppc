@@ -184,37 +184,26 @@ async function runAgent(args: string[]) {
         console.log('Unknown command: ' + action);
       }
       console.log(`
-PI Extension - Automatic Project Context
+PI Agent - Background Context Manager
 
 Usage: pi agent <command>
 
 Commands:
-  start       Start the PI Extension
-  stop        Stop the PI Extension
-  restart     Restart the PI Extension
-  status      Check if extension is running
-  list        List all running extensions
-  sync        Trigger immediate sync
+  start     Start the agent (runs in background)
+  stop      Stop the agent
+  restart   Restart the agent
+  status    Check if agent is running
+  list      List all running agents
+  sync      Trigger immediate sync
 
-Options:
-  --port N    Use specific port (default: auto-assigned)
+No ports, no network - fully file-based.
+State stored in .pi/agent.{project}.state.json
 
-Features (enabled by default):
-  - File watcher - auto-syncs graphs on file changes
-  - Git hooks - syncs after commits, pulls, checkouts
-  - HTTP API - query context via localhost
-  - Status updates - updates .pi/status.json every 30s
-
-Multiple Projects:
-  Each project gets its own port automatically.
-  Run 'pi agent list' to see all running instances.
-  Query: curl http://localhost:PORT/context
-
-API Endpoints (per project):
-  GET /health    - Health check
-  GET /context   - Full runtime context
-  GET /status    - Project status
-  GET /sync      - Trigger sync
+The agent:
+  - Watches files and auto-syncs on changes
+  - Installs git hooks for auto-sync on commits
+  - Updates state file every 30 seconds
+  - Manages itself via PID files
       `);
   }
 }
@@ -264,9 +253,7 @@ EXAMPLES
   pi status                         Show project status
   pi sync --verbose                 Sync and update all graphs
   pi memory --section beliefs       Show beliefs
-  pi agent start                    Start auto-watcher & API
-  pi agent list                     List all running extensions
-  curl http://localhost:4732/context  Query context via API
+  pi agent start                    Start auto-watcher agent
   `);
 }
 

@@ -1,6 +1,6 @@
 # PI Project Context
 
-> A persistent project brain for coding agents — local, inspectable, version-controlled.
+> A persistent project brain for coding agents — local, file-based, zero network dependency.
 
 ![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)
 ![TypeScript](https://img.shields.io/badge/typescript-5.0-blue)
@@ -8,76 +8,92 @@
 
 ## What is PI?
 
-PI is a **Claude-Code-like project memory system** that gives coding agents persistent, structured context about your project. Every project gets a local `.pi/` directory that acts as its "project brain" — no databases, no vector embeddings, just clean local files.
+PI gives coding agents **persistent memory** about your project. Each project gets a `.pi/` directory that acts as its "brain" — no databases, no network, just local files.
 
-The core principle:
-
-> **Chat history ≠ memory**
->
-> Memory should be explicit, structured, file-based, inspectable, editable, and version-controllable.
-
-## Why PI?
-
-Traditional agent sessions start with a blank slate. PI changes that:
-
-| Without PI | With PI |
-|------------|---------|
-| Agent forgets everything between sessions | Agent has persistent project memory |
-| Decisions buried in Slack/DM/chat | Decisions tracked in `.pi/architecture/decisions.md` |
-| Context scattered across readmes | Context assembled from structured files |
-| New agent must re-learn codebase | New agent reconstructs context from graphs |
+**Core principle:** Chat history ≠ memory. Memory should be explicit, structured, file-based, inspectable, and version-controllable.
 
 ## Quick Start
 
-### Installation
+### 1. Install
 
 ```bash
 npm install pi-ppc
 ```
 
-### Initialize a Project
+### 2. Initialize
 
 ```bash
 pi init
 ```
 
-### Start Automatic Mode
+### 3. Start Agent (Optional, for auto-sync)
 
 ```bash
 pi agent start
 ```
 
-This starts the PI Extension which runs in the background and automatically:
-- Syncs graphs when files change
-- Installs git hooks for auto-sync
-- Provides an HTTP API on port 4732
+Now your agent will:
+- Auto-sync graphs when files change
+- Sync after git commits/pulls/checkouts
+- Keep state files updated
+
+### 4. Use in Your Coding Agent
+
+```bash
+# Get full project context
+pi context --json
+
+# Check project status
+pi status
+
+# See what memory exists
+pi memory
+```
+
+That's it. No ports, no network, no configuration.
+
+## Commands
+
+### Core Commands
+
+| Command | Description |
+|---------|-------------|
+| `pi init` | Initialize `.pi/` directory |
+| `pi context` | Build runtime context for agent sessions |
+| `pi status` | Show project dashboard |
+| `pi sync` | Update symbol/dependency/file graphs |
+| `pi memory` | Display beliefs, decisions, entities |
+| `pi summarize` | Compress recent activity into memory |
+
+### Agent Commands
+
+| Command | Description |
+|---------|-------------|
+| `pi agent start` | Start background agent (auto-sync, file watch) |
+| `pi agent stop` | Stop background agent |
+| `pi agent status` | Check if agent is running |
+| `pi agent list` | List all running agents |
+| `pi agent sync` | Trigger immediate sync |
 
 ## Project Structure
 
 ```
 .pi/                          # Your project's persistent brain
-├── identity/                 # Who is this project?
+├── identity/                 # Project identity
 │   ├── vision.md            # What are we building?
 │   ├── goals.md             # What are we trying to achieve?
 │   └── constraints.md       # What constraints exist?
 │
 ├── architecture/             # How is it built?
 │   ├── system_overview.md   # High-level architecture
-│   ├── decisions.md         # ADRs (Architecture Decision Records)
+│   ├── decisions.md         # Architecture Decision Records
 │   ├── patterns.md          # Established design patterns
 │   └── interfaces.md        # Public APIs
 │
 ├── memory/                   # What do we know?
 │   ├── semantic/            # Entities, concepts, relations
-│   │   ├── entities.json
-│   │   ├── concepts.json
-│   │   └── relations.json
-│   ├── episodic/            # What happened?
-│   │   ├── events.jsonl     # Event stream
-│   │   └── sessions/        # Session archives
-│   └── procedural/          # How do we work?
-│       ├── workflows.md
-│       └── coding_rules.md
+│   ├── episodic/            # Events (JSONL stream)
+│   └── procedural/          # Workflows, coding rules
 │
 ├── state/                    # What are we working on?
 │   ├── current_focus.json   # Current task focus
@@ -91,238 +107,109 @@ This starts the PI Extension which runs in the background and automatically:
 │   └── file_graph.json       # Import relationships
 │
 ├── summaries/               # Auto-generated summaries
-│   ├── project_summary.md
-│   ├── architecture_summary.md
-│   └── recent_state.md
-│
-├── world_model/              # What do we believe?
-│   ├── beliefs.json          # Inferred beliefs
-│   ├── assumptions.json     # Working assumptions
-│   └── confidence.json      # Confidence levels
-│
-└── cache/                    # Cached data
+├── world_model/            # Beliefs and assumptions
+├── agent.*.state.json      # Agent runtime state
+└── cache/                   # Cached data
 ```
 
-## Commands
+## For AI Coding Agents
 
-### Basic Commands
+### PyCodingAgent Integration
 
-```bash
-# Initialize .pi/ directory
-pi init
+Add PI commands to your agent's execution loop:
 
-# Build runtime context for a new session
-pi context
+```python
+# In your agent's context gathering phase
+def get_project_context(project_root: str) -> dict:
+    result = subprocess.run(
+        ['node', 'path/to/node_modules/pi-ppc/dist/cli/index.js', 'context', '--json'],
+        cwd=project_root,
+        capture_output=True,
+        text=True
+    )
+    return json.loads(result.stdout)
 
-# Show project status dashboard
-pi status
-
-# Update symbol/dependency/file graphs
-pi sync
-
-# Display memory (beliefs, decisions, entities)
-pi memory
-
-# Distill recent activity into memory
-pi summarize
+# In your agent's session end phase
+def sync_and_summarize(project_root: str):
+    subprocess.run(
+        ['node', 'path/to/node_modules/pi-ppc/dist/cli/index.js', 'sync'],
+        cwd=project_root
+    )
+    subprocess.run(
+        ['node', 'path/to/node_modules/pi-ppc/dist/cli/index.js', 'summarize'],
+        cwd=project_root
+    )
 ```
 
-### Agent Commands (Automatic Mode)
+### Using with Claude Code
 
-```bash
-# Start the PI Extension (auto-sync, git hooks, HTTP API)
-pi agent start
-
-# Stop the extension
-pi agent stop
-
-# Check if running
-pi agent status
-
-# Trigger manual sync
-pi agent sync
-
-# Restart the extension
-pi agent restart
-```
-
-## PI Extension (Automatic Mode)
-
-The PI Extension runs in the background and provides fully automatic context management:
-
-### Features
-
-- **File Watcher** - Automatically syncs graphs when source files change
-- **Git Hooks** - Syncs after commits, pulls, and checkouts
-- **HTTP API** - Query context via HTTP requests
-- **Status Updates** - Keeps `.pi/status.json` current
-
-### HTTP API
-
-When running `pi agent start`, an HTTP API is available at `http://localhost:4732`:
-
-```bash
-# Health check
-curl http://localhost:4732/health
-
-# Get full runtime context
-curl http://localhost:4732/context | jq .
-
-# Get project status
-curl http://localhost:4732/status | jq .
-
-# Trigger a sync
-curl -X POST http://localhost:4732/sync
-```
-
-### Integration with AI Agents
-
-AI agents can query context directly:
-
-```bash
-# Get context as JSON for agent startup
-curl http://localhost:4732/context
-```
-
-## Commands in Detail
-
-### `pi init`
-
-Initializes the `.pi/` directory structure. Safe to run multiple times — merges with existing structure.
-
-```bash
-pi init --verbose
-```
-
-### `pi context`
-
-Builds a complete runtime context by loading:
-1. Identity (vision, goals, constraints)
-2. Architecture summaries
-3. State (focus, tasks, questions)
-4. Recent episodic memory
-5. Semantic memory
-6. Code graph context
-7. Recent changes
-
-```bash
-# Full context as JSON
-pi context --json
-
-# Find relevant memories about a topic
-pi context --relevant "authentication"
-```
-
-### `pi status`
-
-Displays a visual dashboard of project state:
+In your agent's system prompt:
 
 ```
-┌──────────────────────────────────────────────────┐
-│             Project Status                        │
-└──────────────────────────────────────────────────┘
-
-📍 Current Focus
-──────────────────────────────
-  Implementing user authentication
-
-📋 Active Tasks
-──────────────────────────────
-  🔄 In Progress (2):
-     • Add OAuth2 support
-     • Create login page
-  ⏳ Pending (5):
-     • Add password reset flow
-
-📊 Progress
-──────────────────────────────
-  Tasks: [████░░░░░░] 40% (2/5)
-  Events: 47
-  Sessions: 12
+When starting a session, run 'pi context' to get project state.
+When completing tasks, run 'pi sync' to update graphs.
+When ending sessions, run 'pi summarize' to distill knowledge.
 ```
 
-### `pi sync`
+### Using with Continue.dev
 
-Updates all knowledge graphs:
+Add to your `~/.continue/config.py`:
 
-- **Symbol graph**: Extracts classes, functions, interfaces, types
-- **Dependency graph**: Maps npm packages and versions
-- **File graph**: Tracks import relationships
+```python
+from continue.config import ContinueConfig
 
-```bash
-# Full sync
-pi sync --verbose
+def modify_model_messages(messages):
+    # Add PI context to system prompt
+    import subprocess
+    result = subprocess.run(
+        ['pi', 'context'],
+        capture_output=True,
+        text=True
+    )
+    context = result.stdout
+    
+    for msg in messages:
+        if msg.get('role') == 'system':
+            msg['content'] += f"\n\n# Project Context\n{context}"
+    return messages
 
-# Only update symbol graph
-pi sync --scope symbol
+config = ContinueConfig(
+    modify_model_messages=modify_model_messages
+)
 ```
 
-### `pi memory`
+## Agent Architecture
 
-Displays accumulated knowledge:
-
-```bash
-# All memory sections
-pi memory
-
-# Specific sections
-pi memory --section beliefs
-pi memory --section entities
-pi memory --section decisions
-pi memory --section events
-pi memory --section assumptions
-```
-
-### `pi summarize`
-
-Compresses recent session activity into distilled knowledge:
+The `pi agent` runs in the background with **zero network dependency**:
 
 ```
-Raw sessions
-    ↓
-extract decisions → update decisions.md
-extract entities  → update entities.json
-extract tasks    → update active_tasks.json
-extract assumptions → update world_model/
-    ↓
-update summaries
-    ↓
-discard excess raw history
+┌─────────────────────────────────────────────────────────────┐
+│                    PI Agent (Background)                     │
+├─────────────────────────────────────────────────────────────┤
+│  File Watcher ───────► Sync Engine ───────► .pi/graph/       │
+│  (fs.watch)           (ripgrep/tree)      (JSON files)      │
+├─────────────────────────────────────────────────────────────┤
+│  Git Hooks ─────────► Sync Engine ───────► .pi/graph/       │
+│  (post-commit)                                          │
+├─────────────────────────────────────────────────────────────┤
+│  State Timer ───────► .pi/agent.{name}.state.json          │
+│  (every 30s)                                               │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Architecture
+### State Files
 
+Each project maintains `.pi/agent.{project}.state.json`:
+
+```json
+{
+  "pid": 1234,
+  "startedAt": "2024-05-24T09:00:00Z",
+  "lastSync": "2024-05-24T09:22:00Z",
+  "projectRoot": "/path/to/project",
+  "status": "running"
+}
 ```
-src/
-├── core/                      # Core engines
-│   ├── context-engine/        # Builds RuntimeContext
-│   ├── graph-engine/          # Extracts code graphs
-│   ├── memory-engine/         # Extracts & distills knowledge
-│   └── types.ts               # TypeScript interfaces
-│
-├── cli/                       # CLI commands
-│   ├── init.ts
-│   ├── context.ts
-│   ├── status.ts
-│   ├── sync.ts
-│   ├── memory.ts
-│   └── summarize.ts
-│
-└── integrations/              # Integration points
-    ├── git.ts                 # Git integration
-    └── extension-system/     # Background agent
-        └── agent.ts           # Auto-sync, HTTP API, file watcher
-```
-
-## Design Principles
-
-1. **Local-first** — Everything stored locally, no external services
-2. **File-based** — Human-readable, git-friendly, easy to edit
-3. **No databases** — Plain JSON/JSONL/Markdown files
-4. **No vector stores** — Keyword matching for retrieval
-5. **Model-agnostic** — Works with any LLM backend
-6. **Deterministic** — Same input always produces same output
-7. **Inspectable** — All state visible and editable
 
 ## File Formats
 
@@ -339,46 +226,121 @@ src/
 ### JSONL Event Stream
 
 ```jsonl
-{"id":"evt-001","type":"decision","timestamp":"...","summary":"Use JWT for auth","session_id":"sess-abc"}
-{"id":"evt-002","type":"task","timestamp":"...","summary":"Created auth.ts","session_id":"sess-abc"}
+{"id":"e1","type":"decision","summary":"Use JWT for auth","ts":"..."}
+{"id":"e2","type":"task","summary":"Created auth.ts","ts":"..."}
 ```
 
 ### Markdown Documents
 
-Plain Markdown with structured sections for:
-- Architecture decisions
-- Design patterns
-- Coding rules
-- Workflow documentation
+Plain Markdown for decisions, patterns, workflows.
 
-## Use Cases
+## Design Principles
 
-### For Individual Developers
+1. **Local-first** — Everything in `.pi/`, no external services
+2. **File-based** — Human-readable, git-friendly
+3. **No databases** — Plain JSON/JSONL/Markdown
+4. **No network** — No ports, no HTTP, no servers
+5. **Model-agnostic** — Works with any LLM
+6. **Deterministic** — Same input = same output
+7. **Inspectable** — All state visible and editable
 
-- Maintain context across sessions
-- Track architectural decisions
-- Keep task state persistent
+## API Reference
 
-### For Development Teams
+### `pi init`
 
-- Share project knowledge via git
-- Onboard new team members quickly
-- Track decisions and rationale
+```bash
+pi init                    # Initialize .pi/
+pi init --verbose          # Show what was created
+```
 
-### For AI Coding Agents
+### `pi context`
 
-- Reconstruct project understanding from `.pi/`
-- Make informed decisions based on history
-- Maintain consistent behavior across sessions
+```bash
+pi context                # Human-readable context
+pi context --json         # Full context as JSON
+pi context --relevant auth # Find relevant memories
+```
+
+### `pi status`
+
+```bash
+pi status                 # Visual dashboard
+pi status --json          # JSON output
+```
+
+### `pi sync`
+
+```bash
+pi sync                   # Sync all graphs
+pi sync --scope symbol    # Only symbol graph
+pi sync --verbose         # Detailed output
+```
+
+### `pi memory`
+
+```bash
+pi memory                # All memory sections
+pi memory --section beliefs
+pi memory --section decisions
+pi memory --section entities
+pi memory --section events
+pi memory --section assumptions
+```
+
+### `pi agent`
+
+```bash
+pi agent start           # Start background agent
+pi agent stop            # Stop background agent
+pi agent status          # Check if running
+pi agent list            # List all running agents
+pi agent sync            # Trigger immediate sync
+pi agent restart         # Restart the agent
+```
+
+## Examples
+
+### Set Project Focus
+
+```bash
+echo '{"focus": "Implement login", "focus_since": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", "priority": "high"}' > .pi/state/current_focus.json
+```
+
+### Add a Task
+
+```bash
+cat >> .pi/state/active_tasks.json << 'EOF'
+{
+  "tasks": [{
+    "id": "task-1",
+    "title": "Add login form",
+    "status": "in_progress",
+    "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  }]
+}
+EOF
+```
+
+### Record a Decision
+
+```bash
+cat >> .pi/architecture/decisions.md << 'EOF'
+### 2024-05-24: Use bcrypt for password hashing
+**Context:** Security requirement for password storage
+**Decision:** Use bcrypt with cost factor 12
+**Consequences:** Slower hashing, but secure
+EOF
+```
 
 ## Contributing
 
-Contributions welcome! Please read the code structure and follow the patterns:
-
-- Core logic lives in `src/core/`
-- CLI commands are in `src/cli/`
-- All state is file-based (no databases)
-- Types are defined in `src/core/types.ts`
+```bash
+git clone https://github.com/rishi-ie/pi-ppc.git
+cd pi-ppc
+npm install
+npm run build
+npm test
+```
 
 ## License
 
