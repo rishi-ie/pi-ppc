@@ -1,0 +1,26 @@
+{
+  "name": "pi-ppc",
+  "version": "0.1.0",
+  "description": "Persistent Project Context system for PI Coding Agent",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "pi": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli/index.ts",
+    "test": "vitest",
+    "lint": "eslint src"
+  },
+  "keywords": [
+    "project-context",
+    "agent-memory",
+    "coding-assistant"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "typescript": "^6.0.3"
+  }
+}
